@@ -8,9 +8,9 @@
 </head>
 <body>
 <div class="demo">PROPUESTA INTERACTIVA <span>Precios de ejemplo · Sin cobros reales</span></div>
-<header><a class="brand" href="/">Catalina<span> UN ESPACIO PARA TI</span></a><a class="nav" href="#paquetes">Ver paquetes <span>↗</span></a></header>
+<header><a class="brand" href="/">Catalina<span> UN ESPACIO PARA TI</span></a><nav><a class="nav" href="#paquetes">Ver paquetes ↗</a><a class="admin-link" href="/admin">Admin demo ↗</a></nav></header>
 <main>
-<section class="intro"><p class="eyebrow">A TU RITMO, A TU MEDIDA</p><h1>Elige lo que<br>va contigo<span>.</span></h1><p>Tu paquete, tu cantidad, tu momento.<br>Reserva en unos pasos y sigue con tu día.</p><div class="steps"><span><b>01</b> Elige</span><span><b>02</b> Personaliza</span><span><b>03</b> Paga</span></div></section>
+<section class="intro"><p class="eyebrow">A TU RITMO, A TU MEDIDA</p><h1>Elige lo que<br>va contigo<span>.</span></h1><p>Tu paquete, tu cantidad, tu momento.<br>Reserva en unos pasos y sigue con tu día.</p><div class="hero-art" aria-hidden="true"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="art-note">Un momento<br><em>para ti.</em><span>ELIGE · DISFRUTA · REPITE</span></div></div><div class="steps"><span><b>01</b> Elige</span><span><b>02</b> Personaliza</span><span><b>03</b> Paga</span></div></section>
 <div class="layout" id="paquetes"><section aria-label="Elige tu paquete"><div class="section-heading"><h2>Encuentra tu opción</h2><span>01 — 03</span></div><div class="packages">
 <button class="package selected" data-index="0" aria-pressed="true"><span class="package-top"><span>PARA EMPEZAR</span><i>✓</i></span><h3>Paquete 1</h3><p>Un primer paso, a tu ritmo.</p><div class="price">$500 <span>MXN / paquete</span></div></button>
 <button class="package" data-index="1" aria-pressed="false"><span class="package-top"><span>PARA SEGUIR</span><i>✓</i></span><h3>Paquete 2</h3><p>Más espacio para lo que necesitas.</p><div class="price">$900 <span>MXN / paquete</span></div></button>
@@ -20,5 +20,6 @@
 <section class="reassurance"><div><span>↗</span><h3>Sin complicaciones</h3><p>Elige y paga sin esperar una respuesta.</p></div><div><span>◇</span><h3>Desde donde estés</h3><p>Una experiencia sencilla en móvil y ordenador.</p></div><div><span>♡</span><h3>Todo a tu medida</h3><p>Elige un paquete o indica tu propio monto.</p></div></section>
 </main><footer><span class="brand">Catalina</span><span>Hecho para hacerlo fácil.</span><span>Maqueta · No procesa pagos</span></footer>
 <dialog id="checkout"><button id="close-dialog" aria-label="Cerrar">×</button><p class="eyebrow">ASÍ SERÁ EL SIGUIENTE PASO</p><h2>Todo listo para pagar.</h2><p id="checkout-detail"></p><div class="checkout-note">En la versión final, aquí se abrirá la página segura de Stripe para introducir los datos y completar el pago.</div><p class="simulation">Vista de demostración. No se solicitan datos bancarios ni se realizan cargos.</p><button class="pay" id="back">Volver a mi selección</button></dialog>
+<script src="/catalog.js"></script>
 <script src="/app.js"></script>
 </body></html>

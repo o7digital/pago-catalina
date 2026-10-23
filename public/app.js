@@ -1,10 +1,10 @@
-const packages = [{name:'Paquete 1',price:500},{name:'Paquete 2',price:900},{name:'Paquete 3',price:1200}];
-let selected = 0, quantity = 1, custom = false;
+const packages = readCatalog();
+let selected = Math.max(0,packages.findIndex(p=>p.active)), quantity = 1, custom = !packages.some(p=>p.active);
 const $ = id => document.getElementById(id);
 const money = value => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN',maximumFractionDigits:2}).format(value) + ' MXN';
 function amount(){ return custom ? Number($('amount').value) : packages[selected].price * quantity; }
 function render(){
-  document.querySelectorAll('.package').forEach((el,i)=>{const active=!custom&&selected===i;el.classList.toggle('selected',active);el.setAttribute('aria-pressed',String(active));});
+  document.querySelectorAll('.package').forEach((el,i)=>{el.hidden=!packages[i].active;el.querySelector('h3').textContent=packages[i].name;el.querySelector('p').textContent=packages[i].description;const price=el.querySelector('.price');price.replaceChildren(document.createTextNode(new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(packages[i].price)));const unit=document.createElement('span');unit.textContent='MXN / paquete';price.append(unit);const active=!custom&&selected===i;el.classList.toggle('selected',active);el.setAttribute('aria-pressed',String(active));});
   $('order-name').textContent = custom ? 'Monto libre' : packages[selected].name;
   $('unit-price').textContent = custom ? 'Tú eliges el importe' : money(packages[selected].price)+' por paquete';
   $('quantity-row').hidden = custom;
@@ -30,3 +30,5 @@ $('pay').addEventListener('click',()=>{
 $('close-dialog').addEventListener('click',()=>$('checkout').close());
 $('back').addEventListener('click',()=>$('checkout').close());
 render();
+
+window.addEventListener('storage', event=>{if(event.key==='catalina-demo-catalog')location.reload();});
