@@ -1,17 +1,18 @@
 const $ = id => document.getElementById(id);
 const labels = { paid: 'Pagado', pending: 'Pendiente', refunded: 'Reembolsado', partially_refunded: 'Reembolso parcial', failed: 'Fallido', expired: 'Expirado' };
-let orders = [], csrf, setupRequired = false;
-const setupToken = new URLSearchParams(location.hash.slice(1)).get('setup');
-if (setupToken) history.replaceState(null, '', location.pathname);
+let orders = [], csrf, setupRequired = false, currentUser, pendingChallenge, codeContext;
+const authParams = new URLSearchParams(location.hash.slice(1));
+const setupToken = authParams.get('setup'), inviteToken = authParams.get('invite');
+if (setupToken || inviteToken) history.replaceState(null, '', location.pathname);
 async function adminApi(path, options = {}) {
   try { return await api('/admin' + path, { ...options, headers: { 'x-csrf-token': csrf || '', ...options.headers } }); }
   catch (error) { if (error.status === 401) showAuth(); throw error; }
 }
 function setView(view) {
-  if (!['overview', 'orders', 'catalog', 'connection'].includes(view)) view = 'overview';
+  if (!['overview', 'orders', 'catalog', 'connection', 'account'].includes(view)) view = 'overview';
   document.querySelectorAll('.view').forEach(el => { el.hidden = el.id !== view; });
   document.querySelectorAll('[data-view]').forEach(el => { el.classList.toggle('active', el.dataset.view === view); if (el.dataset.view === view) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current'); });
-  $('breadcrumb').textContent = { overview: 'Resumen', orders: 'Pedidos', catalog: 'Paquetes', connection: 'Conexión Stripe' }[view];
+  $('breadcrumb').textContent = { overview: 'Resumen', orders: 'Pedidos', catalog: 'Paquetes', connection: 'Conexión Stripe', account: 'Cuenta y accesos' }[view];
   history.replaceState(null, '', '#' + view);
 }
 function date(value) { return new Date(value).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'America/Mexico_City' }); }
@@ -93,7 +94,8 @@ async function refresh() {
 }
 function showAuth() {
   $('auth-screen').hidden = false; $('workspace').hidden = true;
-  if (!setupRequired) {
+  $('auth-form').hidden = false; $('code-form').hidden = true;
+  if (!setupRequired && !inviteToken) {
     $('auth-title').textContent = 'Bienvenida.';
     $('auth-description').textContent = 'Inicia sesión para gestionar tus paquetes y pedidos.';
     $('auth-submit').textContent = 'Entrar';
@@ -101,12 +103,69 @@ function showAuth() {
     $('auth-password').minLength = 0;
   }
 }
-async function showWorkspace(email) { $('auth-screen').hidden = true; $('workspace').hidden = false; $('account-email').textContent = email; setView(location.hash.slice(1)); await Promise.all([editors(), refresh()]); }
+function showCode(data, context) {
+  pendingChallenge = data.challenge; codeContext = context;
+  $('auth-screen').hidden = false; $('workspace').hidden = true;
+  $('auth-form').hidden = true; $('code-form').hidden = false;
+  $('auth-title').textContent = 'Revisa tu correo.';
+  $('auth-description').textContent = 'Hemos enviado un código a ' + data.email + '. Caduca en 10 minutos. Revisa también el correo no deseado.';
+  $('auth-feedback').textContent = ''; $('auth-code').value = ''; $('auth-code').focus();
+}
+async function loadAccount() {
+  $('mfa-status').textContent = currentUser.mfaEnabled ? 'Activada. Cada nuevo acceso requiere tu contraseña y un código enviado a tu correo.' : 'No está activada. Confirma tu contraseña y el código recibido para proteger tu cuenta.';
+  $('mfa-form').hidden = currentUser.mfaEnabled;
+  $('enable-mfa').disabled = !currentUser.mailReady;
+  if (!currentUser.mailReady) $('mfa-feedback').textContent = 'El envío de códigos todavía no está configurado.';
+  $('access-management').hidden = currentUser.role !== 'owner';
+  if (currentUser.role === 'owner') await loadUsers();
+}
+async function loadUsers() {
+  const [users, invites] = await Promise.all([adminApi('/users'), adminApi('/invitations')]);
+  $('users-list').replaceChildren();
+  users.forEach(u => { const row = node('p', u.email); row.append(node('small', (u.role === 'owner' ? 'Propietario' : 'Administración') + ' · ' + (u.mfaEnabled ? 'Verificación por correo activada' : 'Verificación por correo pendiente'))); $('users-list').append(row); });
+  $('invitations-list').replaceChildren();
+  if (!invites.length) $('invitations-list').append(node('p', 'No hay invitaciones pendientes.'));
+  invites.forEach(i => { const row = node('div', undefined, 'invite-row'), revoke = node('button', 'Revocar', 'text-button'); revoke.type = 'button'; row.append(node('span', i.email + ' · Caduca: ' + date(i.expires)), revoke); revoke.addEventListener('click', async () => { revoke.disabled = true; try { await adminApi('/invitations/' + i.id, { method: 'DELETE' }); await loadUsers(); } catch (error) { $('invite-feedback').textContent = error.message; revoke.disabled = false; } }); $('invitations-list').append(row); });
+}
+async function showWorkspace(user) { currentUser = user; $('auth-screen').hidden = true; $('workspace').hidden = false; $('account-email').textContent = user.email; setView(location.hash.slice(1)); await Promise.all([editors(), refresh(), loadAccount()]); }
 $('auth-form').addEventListener('submit', async event => {
   event.preventDefault(); $('auth-submit').disabled = true; $('auth-feedback').textContent = '';
-  try { const data = await api('/admin/' + (setupRequired ? 'setup' : 'login'), { method: 'POST', body: JSON.stringify({ email: $('auth-email').value, password: $('auth-password').value, token: setupToken }) }); csrf = data.csrf; $('auth-password').value = ''; setupRequired = false; await showWorkspace(data.email); }
-  catch (error) { $('auth-feedback').textContent = error.message; } finally { $('auth-submit').disabled = false; }
+  try {
+    const action = inviteToken ? 'register' : setupRequired ? 'setup' : 'login';
+    const data = await api('/admin/' + action, { method: 'POST', body: JSON.stringify({ email: $('auth-email').value, password: $('auth-password').value, token: inviteToken || setupToken }) });
+    $('auth-password').value = '';
+    if (data.codeRequired) showCode(data, action);
+    else { csrf = data.csrf; setupRequired = false; await showWorkspace(data); }
+  } catch (error) { $('auth-feedback').textContent = error.message; } finally { $('auth-submit').disabled = false; }
 });
+$('code-form').addEventListener('submit', async event => {
+  event.preventDefault(); $('code-submit').disabled = true; $('auth-feedback').textContent = '';
+  try {
+    const data = await api('/admin/verify-code', { method: 'POST', body: JSON.stringify({ challenge: pendingChallenge, code: $('auth-code').value.trim() }) });
+    csrf = data.csrf; setupRequired = false; pendingChallenge = null; $('auth-code').value = ''; await showWorkspace(data);
+  } catch (error) { $('auth-feedback').textContent = error.message; } finally { $('code-submit').disabled = false; }
+});
+$('resend-code').addEventListener('click', async () => {
+  $('resend-code').disabled = true;
+  try { await api('/admin/resend-code', { method: 'POST', body: JSON.stringify({ challenge: pendingChallenge }) }); $('auth-feedback').textContent = 'Nuevo código enviado. Usa el último correo recibido.'; }
+  catch (error) { $('auth-feedback').textContent = error.message; } finally { $('resend-code').disabled = false; }
+});
+$('cancel-code').addEventListener('click', async () => {
+  pendingChallenge = null; $('auth-feedback').textContent = '';
+  if (codeContext === 'enroll' && currentUser) { await showWorkspace(currentUser); setView('account'); }
+  else { showAuth(); if (inviteToken) { $('auth-title').textContent = 'Crea tu cuenta.'; $('auth-description').textContent = 'Elige tu contraseña. Confirmaremos tu correo con un código.'; } }
+});
+$('mfa-form').addEventListener('submit', async event => {
+  event.preventDefault(); $('enable-mfa').disabled = true;
+  try { const data = await adminApi('/mfa/start', { method: 'POST', body: JSON.stringify({ password: $('mfa-password').value }) }); $('mfa-password').value = ''; showCode(data, 'enroll'); }
+  catch (error) { $('mfa-feedback').textContent = error.message; } finally { $('enable-mfa').disabled = false; }
+});
+$('invite-form').addEventListener('submit', async event => {
+  event.preventDefault(); const button = event.target.querySelector('button'); button.disabled = true; $('invite-feedback').textContent = '';
+  try { const data = await adminApi('/invitations', { method: 'POST', body: JSON.stringify({ email: $('invite-email').value }) }); $('invite-link').value = data.url; $('invite-result').hidden = false; await loadUsers(); }
+  catch (error) { $('invite-feedback').textContent = error.message; } finally { button.disabled = false; }
+});
+$('copy-invite').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('invite-link').value); $('invite-feedback').textContent = 'Enlace copiado.'; } catch { $('invite-link').focus(); $('invite-link').select(); $('invite-feedback').textContent = 'Copia el enlace seleccionado.'; } });
 $('logout').addEventListener('click', async () => { try { await adminApi('/logout', { method: 'POST' }); csrf = null; location.reload(); } catch (error) { $('save-feedback').textContent = error.message; } });
 $('password-form').addEventListener('submit', async event => {
   event.preventDefault(); const button = event.target.querySelector('button'); button.disabled = true;
@@ -124,17 +183,23 @@ $('export').addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob(['\uFEFF' + rows.map(r => r.map(quote).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   const a = node('a'); a.href = url; a.download = 'pedidos-catalina.csv'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-window.addEventListener('hashchange', () => { if (!$('workspace').hidden) setView(location.hash.slice(1)); });
+window.addEventListener('hashchange', () => { const params = new URLSearchParams(location.hash.slice(1)); if (params.has('invite') || params.has('setup')) { location.reload(); return; } if (!$('workspace').hidden) setView(location.hash.slice(1)); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('workspace').hidden) refresh().catch(error => { $('save-feedback').textContent = error.message; }); });
 async function init() {
   showAuth();
   try {
+    if (inviteToken) {
+      const invite = await api('/admin/invitation?token=' + encodeURIComponent(inviteToken));
+      $('auth-title').textContent = 'Crea tu cuenta.'; $('auth-description').textContent = 'Elige tu contraseña. Confirmaremos tu correo con un código.';
+      $('auth-email').value = invite.email; $('auth-email').readOnly = true;
+      $('auth-password').minLength = 12; $('auth-password').autocomplete = 'new-password'; $('auth-submit').textContent = 'Crear mi cuenta'; return;
+    }
     const status = await api('/admin/status'); setupRequired = status.setupRequired;
     if (setupRequired) {
       $('auth-title').textContent = 'Activa tu espacio.'; $('auth-description').textContent = setupToken ? 'Elige tu correo y una contraseña de al menos 12 caracteres.' : 'Abre el enlace privado de activación facilitado por tu administrador.';
       $('auth-password').minLength = 12; $('auth-password').autocomplete = 'new-password'; $('auth-submit').textContent = 'Crear mi cuenta'; $('auth-submit').disabled = !setupToken || !status.setupAvailable; return;
     }
-    try { const me = await adminApi('/me'); csrf = me.csrf; await showWorkspace(me.email); }
+    try { const me = await adminApi('/me'); csrf = me.csrf; await showWorkspace(me); }
     catch (error) { if (error.status !== 401) $('auth-feedback').textContent = error.message; }
   } catch (error) { $('auth-feedback').textContent = error.message; }
 }

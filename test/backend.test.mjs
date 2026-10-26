@@ -110,3 +110,116 @@ test('catalog and owner account persist across a backend restart', async t => {
   await restarted.close();
   await rm(directory, { recursive: true });
 });
+
+function newClient(server) {
+  let cookie = '', csrf = '';
+  return async (path, method = 'GET', body) => {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/api${path}`, { method, headers: { origin, 'Content-Type': 'application/json', cookie, 'x-csrf-token': csrf }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const data = await res.json();
+    if (res.headers.get('set-cookie')) cookie = res.headers.get('set-cookie').split(';')[0];
+    if (data.csrf) csrf = data.csrf;
+    return { status: res.status, data, cookie: res.headers.get('set-cookie') };
+  };
+}
+
+test('invited admin verifies her email, uses MFA and cannot replace or invite as the owner', async t => {
+  const messages = [];
+  const f = await fixture(t, { mailer: { sendCode: async (email, code) => messages.push({ email, code }) } });
+  await f.setup(); const owner = f.request, guest = newClient(f.server);
+  const original = f.db.prepare('SELECT * FROM users').get();
+  const invited = await owner('/admin/invitations', 'POST', { email: 'Catalina.New@example.com' }); assert.equal(invited.status, 201);
+  const invitation = new URL(invited.data.url).hash.split('=')[1];
+  assert.equal((await guest('/admin/invitation?token=' + invitation)).data.email, 'catalina.new@example.com');
+  const registration = await guest('/admin/register', 'POST', { token: invitation, password });
+  assert.equal(registration.data.codeRequired, true); assert.equal(registration.cookie, null);
+  assert.equal((await guest('/admin/register', 'POST', { token: invitation, password: 'another-password-123' })).status, 429);
+  assert.equal((await guest('/admin/me')).status, 401);
+  assert.equal(messages[0].email, 'catalina.new@example.com');
+  const rawChallenge = registration.data.challenge;
+  assert.notEqual(f.db.prepare('SELECT token FROM challenges').get().token, rawChallenge);
+  assert.equal((await guest('/admin/verify-code', 'POST', { challenge: rawChallenge, code: '000000' })).status, 400);
+  const verified = await guest('/admin/verify-code', 'POST', { challenge: rawChallenge, code: messages[0].code });
+  assert.equal(verified.status, 200); assert.equal(verified.data.mfaEnabled, true); assert.equal(verified.data.role, 'admin');
+  assert.equal((await guest('/admin/verify-code', 'POST', { challenge: rawChallenge, code: messages[0].code })).status, 400);
+  assert.equal((await guest('/admin/invitation?token=' + invitation)).status, 400);
+  assert.equal((await guest('/admin/invitations', 'POST', { email: 'outsider@example.com' })).status, 403);
+  assert.equal((await guest('/admin/packages', 'POST', { ...pkg, active: false })).status, 201);
+  assert.equal((await owner('/admin/me')).data.email, original.email);
+  assert.equal(f.db.prepare('SELECT password FROM users WHERE id=?').get(original.id).password, original.password);
+  await guest('/admin/logout', 'POST');
+  const login = await guest('/admin/login', 'POST', { email: 'catalina.new@example.com', password });
+  assert.equal(login.data.codeRequired, true); assert.equal(login.cookie, null);
+  assert.equal((await guest('/admin/packages')).status, 401);
+  assert.equal((await guest('/admin/verify-code', 'POST', { challenge: login.data.challenge, code: messages.at(-1).code })).status, 200);
+  assert.equal((await guest('/admin/password', 'PUT', { currentPassword: password, password: 'new-catalina-password' })).status, 200);
+  assert.equal((await owner('/admin/me')).status, 200);
+});
+
+test('email MFA enrollment needs current password, code, expiry and a single-use challenge', async t => {
+  const messages = [];
+  const f = await fixture(t, { mailer: { sendCode: async (email, code) => messages.push({ email, code }) } }); await f.setup(); const r = f.request;
+  assert.equal((await r('/admin/mfa/start', 'POST', { password: 'wrong' })).status, 400);
+  const enrollment = await r('/admin/mfa/start', 'POST', { password });
+  assert.equal((await r('/admin/me')).data.mfaEnabled, false);
+  assert.equal((await r('/admin/verify-code', 'POST', { challenge: enrollment.data.challenge, code: messages[0].code })).data.mfaEnabled, true);
+  await r('/admin/logout', 'POST');
+  const login = await r('/admin/login', 'POST', { email: 'catalina@example.com', password });
+  assert.equal(login.data.codeRequired, true);
+  assert.equal((await r('/admin/resend-code', 'POST', { challenge: login.data.challenge })).status, 429);
+  for (let i = 0; i < 5; i++) assert.equal((await r('/admin/verify-code', 'POST', { challenge: login.data.challenge, code: '000000' })).status, 400);
+  assert.equal((await r('/admin/verify-code', 'POST', { challenge: login.data.challenge, code: messages.at(-1).code })).status, 400);
+  f.db.prepare('DELETE FROM challenges').run();
+  const next = await r('/admin/login', 'POST', { email: 'catalina@example.com', password });
+  f.db.prepare('UPDATE challenges SET expires=0').run();
+  assert.equal((await r('/admin/verify-code', 'POST', { challenge: next.data.challenge, code: messages.at(-1).code })).status, 400);
+});
+
+test('revoked/expired invitations and mail failures fail closed without creating users or sessions', async t => {
+  const f = await fixture(t, { mailer: { sendCode: async () => { throw new Error('SMTP unavailable'); } } }); await f.setup();
+  const r = f.request, guest = newClient(f.server);
+  const i = await r('/admin/invitations', 'POST', { email: 'new@example.com' }); const token = new URL(i.data.url).hash.split('=')[1];
+  assert.equal((await guest('/admin/register', 'POST', { token, password })).status, 503);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM users').get().n, 1);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM challenges').get().n, 0);
+  const invitationId = (await r('/admin/invitations')).data[0].id;
+  await r('/admin/invitations/' + invitationId, 'DELETE');
+  assert.equal((await guest('/admin/register', 'POST', { token, password })).status, 400);
+  const next = await r('/admin/invitations', 'POST', { email: 'next@example.com' });
+  f.db.prepare('UPDATE invitations SET expires=0').run();
+  assert.equal((await guest('/admin/register', 'POST', { token: new URL(next.data.url).hash.split('=')[1], password })).status, 400);
+});
+
+test('legacy owner password and active session are preserved by migration', async t => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const { scryptSync, createHash } = await import('node:crypto');
+  const directory = await mkdtemp(join(tmpdir(), 'catalina-migration-')), database = join(directory, 'old.sqlite');
+  const old = new DatabaseSync(database), salt = 'migration-salt', sessionToken = 'original-session';
+  const oldHash = salt + ':' + scryptSync(password, salt, 64).toString('hex');
+  old.exec('CREATE TABLE admin (id INTEGER PRIMARY KEY CHECK(id=1), email TEXT NOT NULL,password TEXT NOT NULL); CREATE TABLE sessions(token TEXT PRIMARY KEY,csrf TEXT NOT NULL,expires INTEGER NOT NULL);');
+  old.prepare('INSERT INTO admin VALUES (1,?,?)').run('owner@example.com', oldHash);
+  old.prepare('INSERT INTO sessions VALUES (?,?,?)').run(createHash('sha256').update(sessionToken).digest('hex'), 'existing-csrf', Date.now() + 100000);
+  old.close();
+  const f = await fixture(t, { database });
+  const me = await f.request('/admin/me', 'GET', undefined, { headers: { cookie: 'catalina_session=' + sessionToken } });
+  assert.equal(me.status, 200); assert.equal(me.data.email, 'owner@example.com'); assert.equal(me.data.role, 'owner');
+  assert.equal(f.db.prepare('SELECT password FROM users').get().password, oldHash);
+  assert.equal((await f.request('/admin/login', 'POST', { email: 'owner@example.com', password })).status, 200);
+  await f.close(); await rm(directory, { recursive: true });
+});
+
+
+test('resending replaces the code without resetting attempts or extending expiry', async t => {
+  const messages = [];
+  const f = await fixture(t, { mailer: { sendCode: async (email, code) => messages.push(code) } }); await f.setup();
+  const r = f.request;
+  const c = await r('/admin/mfa/start', 'POST', { password });
+  const initial = f.db.prepare('SELECT * FROM challenges').get();
+  await r('/admin/verify-code', 'POST', { challenge: c.data.challenge, code: '000000' });
+  f.db.prepare('UPDATE challenges SET last_sent=0').run();
+  assert.equal((await r('/admin/resend-code', 'POST', { challenge: c.data.challenge })).status, 200);
+  const after = f.db.prepare('SELECT * FROM challenges').get();
+  assert.equal(after.expires, initial.expires); assert.equal(after.attempts, 1); assert.equal(after.sent, 2);
+  assert.notEqual(messages[0], messages[1]);
+  assert.equal((await r('/admin/verify-code', 'POST', { challenge: c.data.challenge, code: messages[0] })).status, 400);
+  assert.equal((await r('/admin/verify-code', 'POST', { challenge: c.data.challenge, code: messages[1] })).status, 200);
+});

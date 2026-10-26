@@ -2,14 +2,11 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import Stripe from 'stripe';
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { installAuth } from './auth.mjs';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-const hash = value => createHash('sha256').update(value).digest('hex');
-const passwordHash = password => { const salt = randomBytes(16).toString('hex'); return salt + ':' + scryptSync(password, salt, 64).toString('hex'); };
-const passwordMatches = (password, stored) => { const [salt, key] = stored.split(':'); return timingSafeEqual(scryptSync(password, salt, 64), Buffer.from(key, 'hex')); };
-const safeEqual = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const money = value => Number.isFinite(value) && Math.round(value * 100) >= 100 && Math.round(value * 100) <= 99999999 && Math.abs(value * 100 - Math.round(value * 100)) < 0.00001;
 
@@ -21,7 +18,6 @@ export function createApp(config = {}) {
   if (path !== ':memory:') mkdirSync(dirname(resolve(path)), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-    CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY CHECK(id=1), email TEXT NOT NULL, password TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, csrf TEXT NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS packages (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, cents INTEGER NOT NULL, active INTEGER NOT NULL, created INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, session_id TEXT UNIQUE, payment_intent TEXT, package_id TEXT, name TEXT NOT NULL, quantity INTEGER NOT NULL, cents INTEGER NOT NULL, status TEXT NOT NULL, customer TEXT, email TEXT, refunded INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL);
@@ -77,56 +73,12 @@ export function createApp(config = {}) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.get('origin') !== origin) return res.status(403).json({ error: 'Origen no autorizado.' });
     next();
   });
-  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Demasiados intentos. Inténtalo en 15 minutos.' } });
   const checkoutLimiter = rateLimit({ windowMs: 60 * 1000, limit: 15, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Espera un momento antes de volver a intentar.' } });
-  const adminExists = () => Boolean(db.prepare('SELECT id FROM admin WHERE id=1').get());
-  const cookie = (res, token, maxAge) => res.cookie('catalina_session', token, { httpOnly: true, secure: production, sameSite: 'strict', path: '/api/admin', maxAge });
-  function startSession(res) {
-    db.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now());
-    const token = randomBytes(32).toString('hex'), csrf = randomBytes(32).toString('hex');
-    db.prepare('INSERT INTO sessions VALUES (?,?,?)').run(hash(token), csrf, Date.now() + 12 * 60 * 60 * 1000);
-    cookie(res, token, 12 * 60 * 60 * 1000);
-    return csrf;
-  }
-  const authenticated = (req, res, next) => {
-    const token = (req.headers.cookie || '').split(';').map(s => s.trim()).find(s => s.startsWith('catalina_session='))?.slice('catalina_session='.length);
-    const session = token && db.prepare('SELECT * FROM sessions WHERE token=? AND expires>?').get(hash(token), Date.now());
-    if (!session) return res.status(401).json({ error: 'Inicia sesión para continuar.' });
-    if (!['GET', 'HEAD'].includes(req.method) && !safeEqual(req.get('x-csrf-token'), session.csrf)) return res.status(403).json({ error: 'Sesión inválida. Actualiza la página.' });
-    req.session = session;
-    next();
-  };
   app.get('/api/health', (req, res) => res.json({ ok: true }));
   app.get('/api/config', (req, res) => res.json({ checkoutEnabled: ready, testMode: ready && !secret?.startsWith('sk_live_') }));
   const packageJSON = p => ({ id: p.id, name: p.name, description: p.description, price: p.cents / 100, active: Boolean(p.active) });
   app.get('/api/packages', (req, res) => res.json(db.prepare('SELECT * FROM packages WHERE active=1 ORDER BY created,id').all().map(packageJSON)));
-  app.get('/api/admin/status', (req, res) => res.json({ setupRequired: !adminExists(), setupAvailable: Boolean(setupToken) }));
-  app.post('/api/admin/setup', authLimiter, (req, res) => {
-    if (adminExists()) throw fail(409, 'La cuenta ya está creada. Inicia sesión.');
-    if (!setupToken || !safeEqual(req.body.token, setupToken)) throw fail(403, 'Enlace de activación inválido.');
-    const { email, password } = req.body;
-    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || typeof password !== 'string' || password.length < 12 || password.length > 200) throw fail(400, 'Indica un correo y una contraseña de entre 12 y 200 caracteres.');
-    db.prepare('INSERT INTO admin VALUES (1,?,?)').run(email.toLowerCase().trim(), passwordHash(password));
-    res.status(201).json({ csrf: startSession(res), email: email.toLowerCase().trim() });
-  });
-  app.post('/api/admin/login', authLimiter, (req, res) => {
-    const { email, password } = req.body;
-    const admin = db.prepare('SELECT * FROM admin WHERE id=1').get();
-    if (typeof email !== 'string' || typeof password !== 'string' || password.length > 200 || !admin || !passwordMatches(password, admin.password) || email.toLowerCase().trim() !== admin.email) throw fail(401, 'Correo o contraseña incorrectos.');
-    res.json({ csrf: startSession(res), email: admin.email });
-  });
-  app.use('/api/admin', (req, res, next) => authenticated(req, res, next));
-  app.get('/api/admin/me', (req, res) => res.json({ email: db.prepare('SELECT email FROM admin WHERE id=1').get().email, csrf: req.session.csrf }));
-  app.post('/api/admin/logout', (req, res) => { db.prepare('DELETE FROM sessions WHERE token=?').run(req.session.token); cookie(res, '', 0); res.json({ ok: true }); });
-  app.put('/api/admin/password', authLimiter, (req, res) => {
-    const admin = db.prepare('SELECT * FROM admin WHERE id=1').get();
-    const { currentPassword, password } = req.body;
-    if (typeof currentPassword !== 'string' || currentPassword.length > 200 || !passwordMatches(currentPassword, admin.password)) throw fail(400, 'La contraseña actual no es correcta.');
-    if (typeof password !== 'string' || password.length < 12 || password.length > 200) throw fail(400, 'La nueva contraseña debe tener entre 12 y 200 caracteres.');
-    db.prepare('UPDATE admin SET password=? WHERE id=1').run(passwordHash(password));
-    db.prepare('DELETE FROM sessions').run();
-    res.json({ csrf: startSession(res) });
-  });
+  installAuth(app, db, { production, origin, setupToken, mailer: config.mailer });
   app.get('/api/admin/packages', (req, res) => res.json(db.prepare('SELECT * FROM packages ORDER BY created,id').all().map(packageJSON)));
   function validatePackage(body) {
     const { name, description, price, active } = body;
