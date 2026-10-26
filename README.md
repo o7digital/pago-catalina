@@ -58,3 +58,19 @@ Stripe-hosted Checkout is created on the server and redirects to the session URL
 The return URL is informational and never marks an order paid. Webhooks verify signatures and retrieve the current Stripe session before updating payment state. Orders retain package names/prices even after editing or deleting a package. Admin lists and totals cover the latest 1,000 orders. Refunds are initiated in Stripe and reflected in the panel, including partial refunds.
 
 Docs: https://docs.stripe.com/checkout/quickstart and https://docs.stripe.com/webhooks
+
+## Current production deployment
+
+- Frontend/admin: `https://pago-catalina.vercel.app` and `/admin`.
+- Backend: confirmed VPS `o7-vps` (`51.178.36.17`), isolated systemd service `pago-catalina`, user `catalina`.
+- App: `/opt/pago-catalina`; private environment: `/etc/pago-catalina.env` (root-only); persistent state: `/var/lib/pago-catalina`.
+- Private listener: `172.22.1.1:8120`, reachable only from the current HTTPS proxy `172.22.1.16` through an explicit UFW rule. `TRUSTED_PROXY` is set to that exact proxy address. If the Mailcow proxy is recreated with a different private address, update this rule and trusted-proxy setting together.
+- Backend HTTPS prefix: `https://mail.o7digitalgroup.com/catalina-backend`. Only `/catalina-backend/api/` is proxied. No Mailcow, CRM, database or existing proxy route was replaced.
+- Added proxy include: `/opt/o7/mailcow/data/conf/nginx/site.catalina-backend.custom`, tracked template `deploy/nginx-mailcow-catalina.custom`. The proxy configuration was validated with `nginx -t`, then gracefully reloaded; its container and the CRM container were not restarted.
+- Limits: 256 MiB memory, 30% of one CPU, 64 tasks; process runs with a lower scheduling priority.
+- Local SQLite backups: `/var/backups/pago-catalina`, owner root, retention 14 days. Job: `/etc/cron.d/pago-catalina-backup`, daily at 05:17 UTC. Initial backup completed successfully. Off-server replication is not configured.
+- Stripe secrets are deliberately blank. No live Stripe transaction has been performed. The account is awaiting its owner's one-time activation link, kept outside the repository.
+
+To update only Catalina, copy the changed application files to `/opt/pago-catalina`, run `npm ci --omit=dev` if dependencies changed and `sudo systemctl restart pago-catalina`. Do not run any Mailcow/CRM Compose commands. Keep `/etc/pago-catalina.env` and `/var/lib/pago-catalina` intact.
+
+To remove the Catalina integration, first revert the frontend to the prior Vercel deployment. Stop/disable only `pago-catalina`, remove only `site.catalina-backend.custom`, run `nginx -t` and gracefully reload the existing Nginx container. Delete only the UFW rule identified by comment `Catalina private HTTPS proxy`. Keep the database/backups until their owner requests deletion.

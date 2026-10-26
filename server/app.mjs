@@ -32,8 +32,8 @@ export function createApp(config = {}) {
   const ready = Boolean(stripe && webhookSecret);
   const app = express();
   app.disable('x-powered-by');
-  // One local reverse proxy; never trust client-supplied forwarding chains.
-  app.set('trust proxy', 'loopback');
+  // Trust only the explicitly configured private reverse-proxy network.
+  app.set('trust proxy', config.trustedProxy || process.env.TRUSTED_PROXY || 'loopback');
   app.use((req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" });
     if (production) res.set('Strict-Transport-Security', 'max-age=31536000');
