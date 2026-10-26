@@ -1,1 +1,24 @@
-{"name":"pago-catalina","version":"1.0.0","private":true,"scripts":{"dev":"node scripts/serve.mjs","build":"node scripts/build.mjs","test":"node --check public/app.js && node --check public/catalog.js && node --check public/admin.js"}}
+{
+  "name": "pago-catalina",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "node --watch server/start.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --check public/app.js && node --check public/catalog.js && node --check public/admin.js && node --test test/*.test.mjs",
+    "start": "node server/start.mjs",
+    "test:browser": "playwright test",
+    "configure:backend": "node deploy/configure-backend.mjs"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "stripe": "^23.0.1"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
+  }
+}

@@ -1,7 +1,14 @@
-const DEFAULT_CATALOG = [
- {name:'Paquete 1',price:500,description:'Un primer paso, a tu ritmo.',active:true},
- {name:'Paquete 2',price:900,description:'Más espacio para lo que necesitas.',active:true},
- {name:'Paquete 3',price:1200,description:'Una opción más completa para ti.',active:true}
-];
-function readCatalog(){try{const value=JSON.parse(localStorage.getItem('catalina-demo-catalog'));if(Array.isArray(value)&&value.length===3&&value.every(p=>typeof p.name==='string'&&p.name.trim()&&Number.isFinite(p.price)&&p.price>=1&&typeof p.description==='string'&&typeof p.active==='boolean'))return value;}catch{}return structuredClone(DEFAULT_CATALOG);}
-function saveCatalog(value){try{localStorage.setItem('catalina-demo-catalog',JSON.stringify(value));return true;}catch{return false;}}
+async function api(path, options = {}) {
+  const response = await fetch('/api' + path, { credentials: 'same-origin', ...options, headers: { 'Content-Type': 'application/json', ...options.headers } });
+  let data;
+  try { data = await response.json(); } catch { throw new Error('El servicio no está disponible. Inténtalo más tarde.'); }
+  if (!response.ok) { const error = new Error(data.error || 'No se pudo completar la operación.'); error.status = response.status; throw error; }
+  return data;
+}
+function node(tag, text, className) {
+  const el = document.createElement(tag);
+  if (text !== undefined) el.textContent = text;
+  if (className) el.className = className;
+  return el;
+}
+const money = value => new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 2 }).format(value) + ' MXN';

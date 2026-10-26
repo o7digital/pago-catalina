@@ -1,0 +1,60 @@
+# Pago Catalina
+
+Spanish-language storefront, private single-owner admin, persistent package catalog and Stripe Checkout. Static frontend can stay on Vercel. Node backend and SQLite database run on a VPS; Railway is not used.
+
+## Local development
+
+Node 22.13+ (Node 24 recommended).
+
+```sh
+npm ci
+ADMIN_SETUP_TOKEN=local-activation-token npm run dev
+```
+
+Visit `http://localhost:3000/admin#setup=local-activation-token` once to create the owner's email/password (12+ characters). The token is consumed by account creation; it never resets an existing account. The catalog starts empty. Create packages in **Paquetes**. Inactive packages are hidden from the public API. Payment buttons stay disabled until both Stripe secrets exist.
+
+```sh
+npm test
+npm run build
+npx playwright test
+```
+
+`npm test` covers authorization, CSRF, credential rotation, catalog validation, server-side pricing, signed/deduplicated webhooks and refunds. Browser tests exercise activation, publication visible from another browser, login/logout and mobile layout. Install Chromium using `npx playwright install chromium` if needed.
+
+## VPS deployment
+
+1. Confirm the target VPS and choose an HTTPS backend address. The existing frontend URL is `https://pago-catalina.vercel.app`.
+2. Install Node 24. Copy `server/`, `public/`, `package.json`, and `package-lock.json` to `/opt/pago-catalina`. Run `npm ci --omit=dev` there.
+3. Create a system user `catalina` without a login shell. Install `deploy/pago-catalina.service` in `/etc/systemd/system/`.
+4. Copy `.env.example` to `/etc/pago-catalina.env`, owned by root, mode `600`. Set a random `ADMIN_SETUP_TOKEN`. Keep the database in `/var/lib/pago-catalina/`, outside releases and Git. Leave Stripe keys blank until configuration is ready.
+5. `systemctl daemon-reload && systemctl enable --now pago-catalina`. Check `curl http://127.0.0.1:8120/api/health`.
+6. Put the service behind HTTPS using the server's existing reverse proxy. See `deploy/nginx.conf.example`. Bind the app to loopback or a private container network; never expose SQLite or configuration files.
+7. Run `npm run configure:backend -- https://YOUR_BACKEND` to set the Vercel API rewrite (an existing path prefix may be included). Deploy using `vercel --prod`, then verify `/api/health`, `/api/packages`, `/admin`, and the homepage. `PUBLIC_ORIGIN` must match the public frontend origin exactly. Preview domains intentionally cannot perform mutations.
+8. Open `https://pago-catalina.vercel.app/admin#setup=TOKEN` privately to create Catalina's account. Remove `ADMIN_SETUP_TOKEN` from the environment file and restart after activation. Do not commit or share this link publicly.
+9. Install `deploy/backup.sh` to `/usr/local/sbin/pago-catalina-backup`, mode `700`. Schedule daily as root. Backups retain 14 days; copy them off the VPS as well. Restore only while the service is stopped, and restore ownership to `catalina`.
+
+**Deployment gate:** do not publish the new frontend until the backend HTTPS address is reachable and the API rewrite is configured; the existing Vercel demo has no backend.
+
+Never run the SQLite backend as a Vercel function: its storage must persist on the VPS. Existing sessions survive backend restarts and expire after 12 hours. Changing the password revokes all other sessions. Login and checkout endpoints are rate limited. All admin writes require both same-origin requests and a session CSRF token. The admin API is private; its static login shell is public.
+
+## Stripe: owner steps
+
+Use **Catalina's Stripe account**, so payments go directly to her account. No Stripe Connect platform is required for this single-owner site.
+
+1. Complete account/business verification and add Catalina's payout bank account in Stripe.
+2. Start in a sandbox/test environment. Copy the secret API key (`sk_test_…`) into `STRIPE_SECRET_KEY` in `/etc/pago-catalina.env`. Never paste secrets into chat, browser code, Git, or the admin screen.
+3. In Stripe **Workbench → Webhooks → Create an event destination**, select **Your account**, **Snapshot** payloads and these events:
+   - `checkout.session.completed`
+   - `checkout.session.async_payment_succeeded`
+   - `checkout.session.async_payment_failed`
+   - `checkout.session.expired`
+   - `charge.refunded`
+4. Destination URL: `https://pago-catalina.vercel.app/api/stripe/webhook`. Copy the destination signing secret (`whsec_…`) into `STRIPE_WEBHOOK_SECRET` in the same environment file, then `sudo systemctl restart pago-catalina`.
+5. Create a package in Catalina's admin. Test a successful card checkout (`4242 4242 4242 4242`, future expiry, any CVC), a cancellation, and a refund. Check successful webhook deliveries in Stripe and the order states in the admin.
+6. For real payments, replace the key with the live account key (`sk_live_…`) and create a **separate live webhook** for the same URL/events. Replace `STRIPE_WEBHOOK_SECRET` with that live destination's signing secret and restart. Never mix test and live secrets.
+
+Stripe-hosted Checkout is created on the server and redirects to the session URL; this flow does not need a publishable `pk_…` key. Packages do not have to be created manually in Stripe: checkout uses the saved package name and price. Payments are currently one-time card payments in MXN. Subscriptions, email receipts configuration, other payment methods and multi-owner access are outside this implementation.
+
+The return URL is informational and never marks an order paid. Webhooks verify signatures and retrieve the current Stripe session before updating payment state. Orders retain package names/prices even after editing or deleting a package. Admin lists and totals cover the latest 1,000 orders. Refunds are initiated in Stripe and reflected in the panel, including partial refunds.
+
+Docs: https://docs.stripe.com/checkout/quickstart and https://docs.stripe.com/webhooks

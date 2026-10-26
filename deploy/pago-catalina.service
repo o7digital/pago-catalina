@@ -1,0 +1,23 @@
+[Unit]
+Description=Catalina packages and Stripe backend
+After=network.target
+
+[Service]
+Type=simple
+User=catalina
+Group=catalina
+WorkingDirectory=/opt/pago-catalina
+EnvironmentFile=/etc/pago-catalina.env
+ExecStart=/usr/bin/node /opt/pago-catalina/server/start.mjs
+Restart=on-failure
+RestartSec=5
+StateDirectory=pago-catalina
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pago-catalina
+
+[Install]
+WantedBy=multi-user.target

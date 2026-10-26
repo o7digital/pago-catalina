@@ -2,3 +2,11 @@ node_modules/
 dist/
 .vercel/
 .DS_Store
+
+.env
+.env.*
+!.env.example
+data/
+*.sqlite*
+test-results/
+playwright-report/
